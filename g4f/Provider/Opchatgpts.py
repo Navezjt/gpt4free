@@ -1,58 +1,76 @@
-import requests
+from __future__ import annotations
 
-from ..typing       import Any, CreateResult
-from .base_provider import BaseProvider
+import random, string, json
+from aiohttp import ClientSession
+
+from ..typing import Messages, AsyncResult
+from .base_provider import AsyncGeneratorProvider
 
 
-class Opchatgpts(BaseProvider):
+class Opchatgpts(AsyncGeneratorProvider):
     url                   = "https://opchatgpts.net"
-    working               = True
     supports_gpt_35_turbo = True
+    working               = True
 
-    @staticmethod
-    def create_completion(
+    @classmethod
+    async def create_async_generator(
+        cls,
         model: str,
-        messages: list[dict[str, str]],
-        stream: bool, **kwargs: Any) -> CreateResult:
-        
-        temperature   = kwargs.get("temperature", 0.8)
-        max_tokens    = kwargs.get("max_tokens", 1024)
-        system_prompt = kwargs.get(
-            "system_prompt",
-            "Converse as if you were an AI assistant. Be friendly, creative.")
-        
-        payload = _create_payload(
-            messages        = messages,
-            temperature     = temperature,
-            max_tokens      = max_tokens,
-            system_prompt   = system_prompt)
+        messages: Messages,
+        proxy: str = None,
+        **kwargs
+    ) -> AsyncResult:
+        headers = {
+            "User-Agent"         : "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/116.0.0.0 Safari/537.36",
+            "Accept"             : "*/*",
+            "Accept-Language"    : "de,en-US;q=0.7,en;q=0.3",
+            "Origin"             : cls.url,
+            "Alt-Used"           : "opchatgpts.net",
+            "Referer"            : f"{cls.url}/chatgpt-free-use/",
+            "Sec-Fetch-Dest"     : "empty",
+            "Sec-Fetch-Mode"     : "cors",
+            "Sec-Fetch-Site"     : "same-origin",
+        }
+        async with ClientSession(
+            headers=headers
+        ) as session:
+            data = {
+                "botId": "default",
+                "chatId": random_string(),
+                "contextId": 28,
+                "customId": None,
+                "messages": messages,
+                "newMessage": messages[-1]["content"],
+                "session": "N/A",
+                "stream": True
+            }
+            async with session.post(f"{cls.url}/wp-json/mwai-ui/v1/chats/submit", json=data, proxy=proxy) as response:
+                response.raise_for_status()
+                async for line in response.content:
+                    if line.startswith(b"data: "):
+                        try:
+                            line = json.loads(line[6:])
+                            assert "type" in line
+                        except:
+                            raise RuntimeError(f"Broken line: {line.decode()}")
+                        if line["type"] == "live":
+                            yield line["data"]
+                        elif line["type"] == "end":
+                            break
 
-        response = requests.post("https://opchatgpts.net/wp-json/ai-chatbot/v1/chat", json=payload)
-        
-        response.raise_for_status()
-        yield response.json()["reply"]
 
-
-def _create_payload(
-    messages: list[dict[str, str]],
-    temperature: float,
-    max_tokens: int, system_prompt: str) -> dict:
+    @classmethod
+    @property
+    def params(cls):
+        params = [
+            ("model", "str"),
+            ("messages", "list[dict[str, str]]"),
+            ("stream", "bool"),
+            ("proxy", "str"),
+        ]
+        param = ", ".join([": ".join(p) for p in params])
+        return f"g4f.provider.{cls.__name__} supports: ({param})"
     
-    return {
-        "env"             : "chatbot",
-        "session"         : "N/A",
-        "prompt"          : "\n",
-        "context"         : system_prompt,
-        "messages"        : messages,
-        "newMessage"      : messages[::-1][0]["content"],
-        "userName"        : '<div class="mwai-name-text">User:</div>',
-        "aiName"          : '<div class="mwai-name-text">AI:</div>',
-        "model"           : "gpt-3.5-turbo",
-        "temperature"     : temperature,
-        "maxTokens"       : max_tokens,
-        "maxResults"      : 1,
-        "apiKey"          : "",
-        "service"         : "openai",
-        "embeddingsIndex" : "",
-        "stop"            : "",
-    }
+
+def random_string(length: int = 10):
+    return ''.join(random.choice(string.ascii_lowercase + string.digits) for _ in range(length))
